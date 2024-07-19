@@ -14,8 +14,55 @@ See the Mulan PSL v2 for more details. */
 
 RC StandardAggregateHashTable::add_chunk(Chunk &groups_chunk, Chunk &aggrs_chunk)
 {
-  // your code here
-  exit(-1);
+  if (groups_chunk.rows() != aggrs_chunk.rows()) {
+    LOG_WARN("group_chunk and aggr_chunk rows must be equal.");
+    return RC::INVALID_ARGUMENT;
+  }
+  for (int row = 0; row < groups_chunk.rows(); ++row) {
+    std::vector<Value> group_values;
+    for (int col = 0; col < groups_chunk.column_num(); ++col) {
+      group_values.push_back(groups_chunk.column(col).get_value(row));
+    }
+    auto it = aggr_values_.find(group_values);
+    if (it == aggr_values_.end()) {
+      std::vector<Value> aggr_values;
+      for (int col = 0; col < aggrs_chunk.column_num(); ++col) {
+        aggr_values.push_back(aggrs_chunk.column(col).get_value(row));
+      }
+      aggr_values_[group_values] = aggr_values;
+    } else {
+      for (int col = 0; col < aggrs_chunk.column_num(); ++col) {
+        auto &aggr_value = it->second[col];
+        auto  cell_value = aggrs_chunk.column(col).get_value(row);
+        switch (aggr_types_[col]) {
+          case AggregateExpr::Type::SUM:
+            if (aggr_value.attr_type() == AttrType::INTS && cell_value.attr_type() == AttrType::INTS) {
+              aggr_value.set_int(aggr_value.get_int() + cell_value.get_int());
+              LOG_WARN("value: %d", aggr_value.get_int());
+            } else if (aggr_value.attr_type() == AttrType::FLOATS && cell_value.attr_type() == AttrType::FLOATS) {
+              aggr_value.set_float(aggr_value.get_float() + cell_value.get_float());
+            } else {
+              LOG_WARN("unsupported type for SUM operation");
+              return RC::INVALID_ARGUMENT;
+            }
+            break;
+          case AggregateExpr::Type::MAX:
+            if (aggr_value.compare(cell_value) < 0) {
+              aggr_value.set_value(cell_value);
+            }
+            break;
+          case AggregateExpr::Type::MIN:
+            if (aggr_value.compare(cell_value) > 0) {
+              aggr_value.set_value(cell_value);
+            }
+            break;
+          case AggregateExpr::Type::COUNT: aggr_value.set_int(aggr_value.get_int() + 1); break;
+          default: LOG_WARN("unsupported aggregate type"); return RC::INVALID_ARGUMENT;
+        }
+      }
+    }
+  }
+  return RC::SUCCESS;
 }
 
 void StandardAggregateHashTable::Scanner::open_scan()
